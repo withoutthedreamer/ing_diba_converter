@@ -1,0 +1,138 @@
+#!/usr/bin/env groovy
+
+@Grapes([
+    @Grab(group='joda-time', module='joda-time', version='2.3'),
+    @Grab(group='org.apache.pdfbox', module='pdfbox', version='1.8.2')
+])
+
+import org.apache.pdfbox.util.PDFTextStripper
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.joda.time.DateTime
+import org.joda.time.format.DateTimeFormat
+import org.joda.time.format.DateTimeFormatter
+import java.util.Locale
+import groovy.xml.MarkupBuilder
+import groovy.json.JsonBuilder
+
+def cli = new CliBuilder(usage: 'ing-diba-converter files.pdf',
+                         header: 'Options:')
+cli.with {
+    h longOpt: 'help', 'Show this message'
+    _ longOpt: 'format', args:1, argName:'Format', 'Set output format. One of [xml, csv]. Defaults to csv'
+}
+
+def options = cli.parse(args)
+
+if (!options) {
+    return
+}
+
+if (options.h) {
+    print cli.usage()
+    return
+}
+
+if (!options.arguments()) {
+    print cli.usage()
+    return
+}
+
+DateTimeFormatter formatter = DateTimeFormat.forPattern("dd.MM.YY")
+DateTimeFormatter oldFormat = DateTimeFormat.forPattern("dd.MM.YYYY")
+
+def rows = []
+
+options.arguments().each { pdf ->
+    // println "Processing ${pdf}"
+    def document = PDDocument.load(pdf)
+    assert document
+    def stripper = new PDFTextStripper()
+    stripper.sortByPosition = true
+    def text = stripper.getText(document)
+    // println text
+
+    def foundNewRow = false
+    def date
+    def description
+    def amount
+
+    text.eachLine { line ->
+        // println line
+        if (line =~ /^\d{2}+\.\d{2}+\.\d{2}+/) { // starts with a date
+            // add the previous row to the list
+            if (date && description && amount) {
+                rows << new Row(date: date, description: description, amount: amount)
+                date = null
+                description = null
+                amount = null
+            }
+            foundNewRow = true
+            def matcher = line =~ /^(\d{2}\.\d{2}\.\d{2}) (.*) (-?[.0-9]+,\d{2}) (-?[.0-9]+,\d{2})/
+            if (!matcher.matches()) {     // old format
+                matcher = line =~ /^(\d{2}\.\d{2}\.\d{4}) (.*) (-?[.0-9]+,\d{2})/
+                if (!matcher.matches()) { // not a transaction
+                    foundNewRow = false
+                } else {
+                    date = oldFormat.withLocale(Locale.GERMAN).parseDateTime(matcher[0][1])
+                }
+            } else {
+                date = formatter.withLocale(Locale.GERMAN).parseDateTime(matcher[0][1])
+            }
+            if (foundNewRow) {
+                description = matcher[0][2]
+                amount = Double.parseDouble(matcher[0][3].replaceAll(',', '.'))
+            }
+        } else if (line.find("Bei Fragen") ||
+                   line.find("Neuer Saldo") ||
+                   line.find("ING-DiBa AG")) {
+            foundNewRow = false
+        } else if (foundNewRow) {
+            description = description << " " + line
+        }
+    }
+    // add the last row
+    if (date && description && amount) {
+        rows << new Row(date: date, description: description, amount: amount)
+    }
+    document.close()
+}
+
+def writer = new StringWriter()
+
+if (options.format == "xml") {
+    def xml = new MarkupBuilder(writer)
+    xml.transactions() {
+        rows.each { row ->
+            transaction() {
+                date(row.date)
+                description(row.description)
+                amount(row.amount)
+            }
+        }
+    }
+}
+
+if (options.format == "csv" || !options.format) {
+    def header = "date,description,amount"
+    writer << header
+    writer << '\n'
+    rows.each {
+        def row = [it.date.toString(), it.description, it.amount.toString()].collect {
+            '"' + it.replaceAll('"', '""') + '"'
+        }.join(',')
+        writer << row
+        writer << '\n'
+    }
+}
+
+println writer.toString()
+
+class Row {
+    DateTime date
+    String description
+    Double amount
+
+    def String toString() {
+        return "Row(${date} ${description} ${amount})"
+    }
+}
