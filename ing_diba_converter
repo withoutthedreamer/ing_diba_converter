@@ -33,7 +33,7 @@ def cli = new CliBuilder(usage: 'ing-diba-converter files.pdf',
                          header: 'Options:')
 cli.with {
     h longOpt: 'help', 'Show this message'
-    _ longOpt: 'format', args:1, argName:'Format', 'Set output format. One of [xml, csv]. Defaults to csv'
+    _ longOpt: 'format', args:1, argName:'Format', 'Set output format. One of [xml, csv, org]. Defaults to csv'
 }
 
 def options = cli.parse(args)
@@ -124,6 +124,16 @@ if (options.format == "xml") {
                 amount(row.amount)
             }
         }
+    }
+}
+
+if (options.format == "org") {
+    DateTimeFormatter fmt = DateTimeFormat.forPattern("<YYYY-MM-dd E>")
+    rows.each {
+        writer << """\
+* ${it.description} ${it.amount}
+ SCHEDULED: ${fmt.withLocale(Locale.ENGLISH).print(it.date)}
+"""
     }
 }
 
